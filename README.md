@@ -22,6 +22,7 @@
   - 站点抓取：`--crawl [页面URL...]` 自动解析页内 `.m3u/.m3u8` 链接
   - 定时循环：`--interval-minutes <分钟数>`（例如 `60` 表示每小时运行一次，Ctrl+C 退出）
   - 稳定性增强：`--retries <次数>`（默认2）、`--per-host-limit <并发>`（默认8，防止单站点限流）、`--max-items <数量>`（限制最大探测数量）
+  - 仅直播：`--require-live` 只接受直播 HLS（自动过滤 VOD 与直链视频）
 
 ### 严格过滤（默认启用）
 
@@ -45,8 +46,12 @@
    - `python find_m3u_sources.py --crawl seeds/sites.txt -o output/working.m3u`
 - 每小时自动运行一次（循环模式）：
    - `python find_m3u_sources.py --discover cn --interval-minutes 60 -o output/working.m3u`
- - 加强稳定性（重试+主机并发限制）：
+- 加强稳定性（重试+主机并发限制）：
    - `python find_m3u_sources.py --discover cn --retries 2 --per-host-limit 8 -o output/working.m3u`
+ - 仅保留中国直播源：
+   - `python find_m3u_sources.py --discover cn --require-live -o output/working.m3u`
+   - 如需扩大来源，可配合 GitHub 搜索中文关键字：
+     - `python find_m3u_sources.py --github-search "iptv china 直播 m3u8" --require-live -o output/working.m3u`
 
 ## 参数
 

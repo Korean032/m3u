@@ -39,6 +39,7 @@ jobs:
             --timeout 6 \
             --retries 2 \
             --per-host-limit 8 \
+            --require-live \
             -o output/working.m3u
 
       - name: Commit and push if changed

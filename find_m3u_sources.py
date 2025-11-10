@@ -37,6 +37,26 @@ def parse_m3u_entries(text: str):
     return entries
 
 
+def hls_is_live(text: str):
+    """根据HLS标签粗判是否为直播。
+    - 含有 #EXT-X-PLAYLIST-TYPE:VOD 或 #EXT-X-ENDLIST -> 视为点播
+    - 含有 #EXT-X-MEDIA-SEQUENCE 或缺少 ENDLIST -> 倾向直播
+    返回 (is_live: bool, reason: str)
+    """
+    t = text.upper()
+    if '#EXT-X-PLAYLIST-TYPE' in t and 'VOD' in t:
+        return False, 'playlist type VOD'
+    if '#EXT-X-ENDLIST' in t:
+        return False, 'has ENDLIST'
+    if '#EXT-X-MEDIA-SEQUENCE' in t:
+        return True, 'has MEDIA-SEQUENCE'
+    # 无ENDLIST且有TARGETDURATION也通常是直播
+    if '#EXT-X-TARGETDURATION' in t:
+        return True, 'has TARGETDURATION without ENDLIST'
+    # 默认不确定时认为可能是直播（后续分片探测再确认）
+    return True, 'no ENDLIST detected'
+
+
 def normalize_url(url: str) -> str:
     u = url.strip()
     if not u:
@@ -72,7 +92,7 @@ async def fetch_text(session, url: str, timeout: float, retries: int = 2):
     return None, (last_err or 'unknown error')
 
 
-async def check_m3u8(session, url: str, timeout: float, strict_segment: bool, retries: int = 2):
+async def check_m3u8(session, url: str, timeout: float, strict_segment: bool, retries: int = 2, require_live: bool = False):
     """校验m3u8可用性。
     严格模式：必须能拿到至少一个分片(200/206)才视为可用；
     非严格：仅清单有效也可视为可用。
@@ -83,6 +103,11 @@ async def check_m3u8(session, url: str, timeout: float, strict_segment: bool, re
     text, base_url = result
     if not text.strip().startswith('#EXTM3U'):
         return False, 'not m3u8 header'
+    # 直播判定（可选）
+    if require_live:
+        is_live, reason_live = hls_is_live(text)
+        if not is_live:
+            return False, f'not live: {reason_live}'
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     candidate_segment = None
     candidate_nested = None
@@ -166,26 +191,29 @@ async def check_direct(session, url: str, timeout: float):
         return False, str(e)
 
 
-async def probe_url(session, url: str, timeout: float, strict_segment: bool, retries: int):
+async def probe_url(session, url: str, timeout: float, strict_segment: bool, retries: int, require_live: bool):
     lower = url.lower()
     if lower.endswith('.m3u8') or 'm3u8' in lower:
-        return await check_m3u8(session, url, timeout, strict_segment, retries)
+        return await check_m3u8(session, url, timeout, strict_segment, retries, require_live=require_live)
     else:
+        # 过滤常见直链视频文件（用户要求只要直播源）
+        if require_live and re.search(r'\.(mp4|mkv|avi|mov|flv)(\?.*)?$', lower):
+            return False, 'direct video file'
         # 直链重试在 check_direct 内处理，保留接口一致性
         return await check_direct(session, url, timeout)
 
 
-async def worker(global_sem, host_sems, session, entry, timeout: float, strict_segment: bool, retries: int):
+async def worker(global_sem, host_sems, session, entry, timeout: float, strict_segment: bool, retries: int, require_live: bool):
     host = urllib.parse.urlsplit(entry['url']).netloc.lower()
     host_sem = host_sems.get(host)
     if host_sem:
         async with global_sem:
             async with host_sem:
-                ok, reason = await probe_url(session, entry['url'], timeout, strict_segment, retries)
+                ok, reason = await probe_url(session, entry['url'], timeout, strict_segment, retries, require_live)
                 return ok, reason
     else:
         async with global_sem:
-            ok, reason = await probe_url(session, entry['url'], timeout, strict_segment, retries)
+            ok, reason = await probe_url(session, entry['url'], timeout, strict_segment, retries, require_live)
             return ok, reason
 
 
@@ -215,7 +243,7 @@ def read_inputs(paths_or_urls):
     return candidates
 
 
-async def process(inputs, out_path: str, timeout: float, concurrency: int, strict_segment: bool, retries: int = 2, per_host_limit: int = 8, max_items: int = 0):
+async def process(inputs, out_path: str, timeout: float, concurrency: int, strict_segment: bool, retries: int = 2, per_host_limit: int = 8, max_items: int = 0, require_live: bool = False):
     import aiohttp  # 延迟导入以便未安装时给出提示
     headers = {'User-Agent': USER_AGENT, 'Accept': '*/*'}
     connector = aiohttp.TCPConnector(limit=concurrency, ssl=False)
@@ -270,7 +298,7 @@ async def process(inputs, out_path: str, timeout: float, concurrency: int, stric
         for h in hosts:
             host_sems[h] = asyncio.Semaphore(per_host_limit)
 
-        tasks = [asyncio.create_task(worker(global_sem, host_sems, session, e, timeout, strict_segment, retries=retries)) for e in to_check]
+        tasks = [asyncio.create_task(worker(global_sem, host_sems, session, e, timeout, strict_segment, retries=retries, require_live=require_live)) for e in to_check]
         results = await asyncio.gather(*tasks)
 
     # 汇总并输出（稳定排序）
@@ -432,6 +460,7 @@ def main():
     parser.add_argument('--retries', type=int, default=2, help='HTTP请求重试次数')
     parser.add_argument('--per-host-limit', type=int, default=8, help='每主机并发限制（默认8，如果并发更小则取并发值）')
     parser.add_argument('--max-items', type=int, default=0, help='最大探测条目数（0表示不限制）')
+    parser.add_argument('--require-live', action='store_true', help='只接受直播HLS（过滤VOD或直链视频）')
     args = parser.parse_args()
 
     inputs = read_inputs(args.input)
@@ -466,6 +495,7 @@ def main():
                 retries=args.retries,
                 per_host_limit=args.per_host_limit,
                 max_items=args.max_items,
+                require_live=args.require_live,
             ))
         except ModuleNotFoundError:
             print('缺少依赖：请先安装 aiohttp，例如：pip install -r requirements.txt')

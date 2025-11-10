@@ -1,0 +1,4 @@
+# 公共M3U示例（可配合 --discover 使用），也可以填入你自己的链接（每行一个）
+
+https://iptv-org.github.io/iptv/index.m3u
+https://iptv-org.github.io/iptv/countries/cn.m3u

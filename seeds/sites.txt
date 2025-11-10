@@ -1,0 +1,4 @@
+# 示例站点页面种子（每行一个URL），脚本将抓取并解析其中的 .m3u/.m3u8 链接
+
+https://github.com/iptv-org/iptv
+https://www.reddit.com/r/IPTV/
